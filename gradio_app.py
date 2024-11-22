@@ -35,6 +35,15 @@ from allegro.pipelines.pipeline_allegro import AllegroPipeline
 from allegro.models.vae.vae_allegro import AllegroAutoencoderKL3D
 from allegro.models.transformers.transformer_3d_allegro import AllegroTransformer3DModel
 
+# For TI2V
+from PIL import Image
+from einops import rearrange
+from torchvision.transforms import Lambda
+from torchvision import transforms
+from allegro.pipelines.pipeline_allegro_ti2v import AllegroTI2VPipeline
+from allegro.models.transformers.transformer_3d_allegro_ti2v import AllegroTransformerTI2V3DModel  # This was the missing one!
+from allegro.pipelines.data_process import ToTensorVideo, CenterCropResizeVideo
+
 
 # Try to suppress annoyingly persistent Windows asyncio proactor errors
 if os.name == 'nt':  # Windows only
@@ -1457,7 +1466,317 @@ def clean_filename(filename):
     filename = re.sub(r'_\d{6}_\d{4}', '', filename)  # Removes YYMMDD_HHMM
     return filename.strip('_')  # Remove any trailing underscores
         
+
+
         
+def preprocess_images(first_frame, last_frame, height, width, device, dtype):
+    """Prepare images for TI2V generation"""
+    norm_fun = Lambda(lambda x: 2. * x - 1.)
+    transform = transforms.Compose([
+        ToTensorVideo(),
+        CenterCropResizeVideo((height, width)),
+        norm_fun
+    ])
+    images = []
+    if first_frame is not None and len(first_frame.strip()) != 0: 
+        images.append(first_frame)
+    else:
+        raise ValueError("First frame must be provided for TI2V generation!")
+        
+    if last_frame is not None and len(last_frame.strip()) != 0: 
+        images.append(last_frame)
+
+    if len(images) == 1:    # first frame as condition
+        conditional_images_indices = [0]
+    elif len(images) == 2:  # first&last frames as condition
+        conditional_images_indices = [0, -1]
+    
+    try:
+        conditional_images = [Image.open(image).convert("RGB") for image in images]
+        conditional_images = [torch.from_numpy(np.copy(np.array(image))) for image in conditional_images]
+        conditional_images = [rearrange(image, 'h w c -> c h w').unsqueeze(0) for image in conditional_images]
+        conditional_images = [transform(image).to(device=device, dtype=dtype) for image in conditional_images]
+    except Exception as e:
+        raise Exception(f'Error processing input images: {str(e)}')
+
+    return dict(conditional_images=conditional_images, 
+                conditional_images_indices=conditional_images_indices)
+                
+                
+def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, guidance_scale, 
+                      num_sampling_steps, seed, enable_cpu_offload, target_fps=15, 
+                      progress=gr.Progress()):
+    output_path = generate_output_path(user_prompt)
+    dtype = torch.float16
+    messages = []
+    generation_start = None
+
+    def add_message(msg):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        formatted_msg = f"[{timestamp}] {msg}"
+        messages.append(formatted_msg)
+        print(formatted_msg)
+        
+    try:
+        # Initial status block
+        summary_messages = [
+            "\n🚀 STARTING TI2V GENERATION",
+            "═" * 25,
+            "📄 Generation Settings:",
+            f"• Prompt: '{user_prompt}'",
+            f"• First Frame: {os.path.basename(first_frame) if first_frame else 'None'}",
+            f"• Last Frame: {os.path.basename(last_frame) if last_frame else 'None'}",
+            f"• Steps: {num_sampling_steps}",
+            f"• Guidance: {guidance_scale}",
+            f"• Seed: {seed}",
+            "═" * 25
+        ]
+        for msg in summary_messages:
+            messages.append(update_console(msg, add_timestamp=False))
+        
+        if not first_frame:
+            add_message("❌ Error: First frame image is required for TI2V generation")
+            return None, "\n".join(messages)
+        
+        progress(0.05, desc="Loading models...")
+        
+        # Load VAE
+        add_message("📥 Loading VAE model...")
+        vae = AllegroAutoencoderKL3D.from_pretrained(
+            "./allegro_weights/vae/", 
+            torch_dtype=torch.float32
+        ).to(device)
+        vae.eval()
+        add_message("✓ VAE loaded successfully")
+
+        # Load Text Encoder
+        progress(0.10, desc="Loading text encoder...")
+        add_message("📥 Loading text encoder...")
+        text_encoder = T5EncoderModel.from_pretrained(
+            "./allegro_weights/text_encoder/", 
+            torch_dtype=dtype
+        ).to(device)
+        text_encoder.eval()
+        add_message("✓ Text encoder loaded successfully")
+
+        # Load remaining models
+        progress(0.50, desc="Loading transformer...")
+        add_message("📥 Loading transformer model...")
+        tokenizer = T5Tokenizer.from_pretrained("./allegro_weights/tokenizer/")
+        scheduler = EulerAncestralDiscreteScheduler()
+        transformer = AllegroTransformerTI2V3DModel.from_pretrained(
+            "./allegro_weights/transformer/", 
+            torch_dtype=dtype
+        ).to(device)
+        transformer.eval()
+        add_message("✓ Transformer model loaded successfully")
+
+        # Initialize TI2V pipeline
+        progress(0.60, desc="Initializing TI2V pipeline...")
+        add_message("🔄 Initializing Allegro TI2V pipeline...")
+        allegro_pipeline = AllegroTI2VPipeline(
+            vae=vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            scheduler=scheduler,
+            transformer=transformer
+        ).to(device)
+
+        if enable_cpu_offload:
+            add_message("💾 Enabling CPU offload to manage VRAM usage...")
+            allegro_pipeline.enable_sequential_cpu_offload()
+
+        # Preprocess images
+        progress(0.70, desc="Processing input images...")
+        add_message("🖼️ Processing conditional images...")
+        try:
+            pre_results = preprocess_images(
+                first_frame, 
+                last_frame, 
+                height=720, 
+                width=1280, 
+                device=device, 
+                dtype=dtype
+            )
+            cond_imgs = pre_results['conditional_images']
+            cond_imgs_indices = pre_results['conditional_images_indices']
+            add_message(f"✓ Images processed successfully ({len(cond_imgs)} frames)")
+        except Exception as e:
+            add_message(f"❌ Error processing images: {str(e)}")
+            return None, "\n".join(messages)
+
+        devicetorch.empty_cache(torch)
+        
+        # Generation phase
+        progress(0.80, desc="Starting generation...")
+        generation_start = time.time()
+        
+        def progress_callback(iter_num: int, t: int, latents: torch.FloatTensor) -> None:
+            nonlocal generation_start
+            elapsed = time.time() - generation_start
+            
+            current_step = iter_num + 1
+            remaining_steps = num_sampling_steps - current_step
+            eta_seconds = (elapsed / current_step) * remaining_steps if current_step > 0 else 0
+            
+            eta_min = int(eta_seconds // 60)
+            eta_sec = int(eta_seconds % 60)
+            
+            percent_complete = 0.8 + (current_step/num_sampling_steps * 0.15)
+            progress(percent_complete, desc=f"Step {current_step}/{num_sampling_steps} • ETA: {eta_min}m {eta_sec}s")
+            
+            progress_msg = f"Step {current_step}/{num_sampling_steps} • ETA: {eta_min}m {eta_sec}s"
+            add_message(progress_msg)
+
+        out_video = allegro_pipeline(
+            user_prompt, 
+            negative_prompt=negative_prompt,
+            conditional_images=cond_imgs,
+            conditional_images_indices=cond_imgs_indices,
+            num_frames=88,
+            height=720,
+            width=1280,
+            num_inference_steps=num_sampling_steps,
+            guidance_scale=guidance_scale,
+            max_sequence_length=512,
+            output_type="np",
+            generator=torch.Generator(device=device).manual_seed(seed),
+            callback=progress_callback,
+            callback_steps=1
+        ).video[0]
+
+        generation_time = time.time() - generation_start
+        add_message(f"✨ Generation complete! Took {generation_time:.1f} seconds")
+        
+        progress(0.95, desc="Processing output...")
+        add_message("💾 Processing generated frames...")
+        
+        # Create output directory
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Parse the FPS
+        fps = int(target_fps.split()[0]) if isinstance(target_fps, str) else int(target_fps)
+        
+        # Handle basic save or interpolation
+        if fps <= 15:
+            add_message("📼 Saving video at original 15 FPS...")
+            imageio.mimwrite(output_path, out_video, fps=15, quality=VIDEO_QUALITY)
+            
+            # Save prompt info
+            save_prompt_info(
+                output_path,
+                user_prompt,
+                negative_prompt,
+                guidance_scale,
+                num_sampling_steps,
+                seed,
+                first_frame=first_frame,
+                last_frame=last_frame
+            )
+            
+            add_message(f"✅ Generation complete! Saved to: {output_path}")
+            progress(1.0, desc="Complete!")
+            return output_path, "\n".join(messages)
+            
+        # Handle interpolation
+        add_message(f"\n🎯 Starting frame interpolation to {fps} FPS...")
+        progress(0.97, desc="Interpolating frames...")
+
+        interpolation_start = time.time()
+        interpolator = VideoInterpolator()
+        interpolated_frames, interp_messages = interpolator.process_video(out_video, target_fps=fps)
+
+        # Add interpolator messages to our message log
+        for msg in interp_messages:
+            add_message(msg)
+
+        if (isinstance(interpolated_frames, (list, np.ndarray)) and 
+            len(interpolated_frames) == int(len(out_video) * (fps/15))):
+            
+            interpolation_time = time.time() - interpolation_start
+            interpolated_path = output_path.replace('.mp4', f'_{fps}fps.mp4')
+            
+            add_message(f"⚡ Frame interpolation complete! Took {interpolation_time:.1f} seconds")
+            add_message(f"📼 Saving interpolated video at {fps} FPS...")
+            
+            imageio.mimwrite(interpolated_path, interpolated_frames, fps=fps, quality=VIDEO_QUALITY)
+            
+            # Save prompt info for interpolated version
+            save_prompt_info(
+                interpolated_path,
+                user_prompt,
+                negative_prompt,
+                guidance_scale,
+                num_sampling_steps,
+                seed,
+                target_fps=fps,
+                first_frame=first_frame,
+                last_frame=last_frame
+            )
+            
+            add_message(f"✅ Processing complete! Final video saved to: {interpolated_path}")
+            progress(1.0, desc="Complete!")
+            return interpolated_path, "\n".join(messages)
+        else:
+            # Fallback to original
+            add_message("⚠️ Interpolation verification failed, saving original video...")
+            imageio.mimwrite(output_path, out_video, fps=15, quality=VIDEO_QUALITY)
+            
+            # Save prompt info for original
+            save_prompt_info(
+                output_path,
+                user_prompt,
+                negative_prompt,
+                guidance_scale,
+                num_sampling_steps,
+                seed,
+                first_frame=first_frame,
+                last_frame=last_frame
+            )
+            
+            add_message(f"✅ Original video saved to: {output_path}")
+            progress(1.0, desc="Complete!")
+            return output_path, "\n".join(messages)
+
+    except Exception as e:
+        error_messages = [
+            "\n❌ ERROR DURING TI2V GENERATION",
+            "═" * 25,
+            f"Details: {str(e)}",
+            "═" * 25
+        ]
+        for msg in error_messages:
+            messages.append(update_console(msg, add_timestamp=False))
+        return None, "\n".join(messages)
+
+    finally:
+        try:
+            # Cleanup section
+            del vae
+            del text_encoder
+            del transformer
+            del allegro_pipeline
+            devicetorch.empty_cache(torch)
+            gc.collect()
+            
+            messages.append(update_console("✓ Resources cleaned up successfully", add_timestamp=False))
+            
+        except Exception as e:
+            messages.append(update_console(f"⚠️ Cleanup warning (non-critical): {str(e)}", add_timestamp=False))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         
 def get_welcome_message():
     return """
@@ -1627,6 +1946,18 @@ css = """
     height: auto !important;
     object-fit: contain !important;
 }
+
+.image-preview {
+    max-height: 400px !important;
+    width: 100% !important;
+}
+
+.image-preview img {
+    max-height: 360px !important;
+    object-fit: contain !important;
+    width: 100% !important;
+}
+
 """
 
     
@@ -1637,12 +1968,36 @@ title = """<style>.allegro-banner{background:linear-gradient(to bottom,#162828,#
 # Create Gradio interface
 with gr.Blocks(css=css) as demo:
     #gr.HTML(title)
-    with gr.Row():
-        video_output = gr.Video(label="Generated Video", elem_classes="video-natural-size")
-    with gr.Row():
-        download_button = gr.Button("Download txt2vid Models First! (40GB) - not required for Tool Box.", variant="primary", visible=check_button_visibility())
-        submit_btn = gr.Button("Generate Video", variant="primary", scale=4, visible=check_generate_button_visibility())
-        transfer_to_toolbox_btn = gr.Button("⬇️ Send to Tool Box", visible=False, scale=1, variant="huggingface")
+    with gr.Tabs() as generate_tabs:
+        with gr.Tab("Video Result"):
+            with gr.Row():
+                video_output = gr.Video(label="Generated Video", interactive=False, elem_classes="video-natural-size")
+            with gr.Row():
+                download_button = gr.Button("Download Video Models First! (40GB) - not required for Tool Box.", variant="primary", visible=check_button_visibility())
+                submit_btn = gr.Button("Generate Video", variant="primary", scale=4, visible=check_generate_button_visibility())
+                transfer_to_toolbox_btn = gr.Button("⬇️ Send to Tool Box", visible=False, scale=1, variant="huggingface")
+                
+        with gr.Tab("i2v input"):
+            with gr.Row():
+                with gr.Column():
+                    first_frame = gr.Image(
+                        label="First Frame (Required)", 
+                        type="filepath",
+                        elem_classes="image-preview"
+                    )
+                with gr.Column():
+                    last_frame = gr.Image(
+                        label="Last Frame (Optional)", 
+                        type="filepath",
+                        elem_classes="image-preview"
+                    )
+            with gr.Row():                    
+                submit_ti2v_btn = gr.Button("Generate TI2V", variant="primary", scale=1)
+                    
+    # with gr.Row():
+        # download_button = gr.Button("Download Video Models First! (40GB) - not required for Tool Box.", variant="primary", visible=check_button_visibility())
+        # submit_btn = gr.Button("Generate Video", variant="primary", scale=4, visible=check_generate_button_visibility())
+        # transfer_to_toolbox_btn = gr.Button("⬇️ Send to Tool Box", visible=False, scale=1, variant="huggingface")
         
     with gr.Row():        
         with gr.Column():
@@ -1853,6 +2208,23 @@ with gr.Blocks(css=css) as demo:
         inputs=[
             user_prompt, 
             negative_prompt, 
+            guidance_scale, 
+            num_sampling_steps, 
+            seed, 
+            enable_cpu_offload,
+            target_fps
+        ],
+        outputs=[video_output, console_out],
+        show_progress=True
+    )
+    
+    submit_ti2v_btn.click(
+        fn=run_inference_ti2v,
+        inputs=[
+            user_prompt, 
+            negative_prompt,
+            first_frame,
+            last_frame, 
             guidance_scale, 
             num_sampling_steps, 
             seed, 
