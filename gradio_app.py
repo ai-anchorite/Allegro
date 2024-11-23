@@ -287,7 +287,7 @@ def run_inference(user_prompt, negative_prompt, guidance_scale, num_sampling_ste
             guidance_scale=guidance_scale,
             max_sequence_length=512,
             output_type="np",
-            generator=torch.Generator(device=device).manual_seed(seed),
+            generator=torch.Generator(device=device).manual_seed(random.randint(0, 10000) if seed == -1 else seed),
             callback=progress_callback,
             callback_steps=1
         ).video[0]        
@@ -1640,7 +1640,7 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
             guidance_scale=guidance_scale,
             max_sequence_length=512,
             output_type="np",
-            generator=torch.Generator(device=device).manual_seed(seed),
+            generator=torch.Generator(device=device).manual_seed(random.randint(0, 10000) if seed == -1 else seed),
             callback=progress_callback,
             callback_steps=1
         ).video[0]
@@ -2020,8 +2020,8 @@ with gr.Blocks(css=css) as demo:
                     num_sampling_steps = gr.Slider(minimum=10, maximum=100, step=1, 
                                                label="Number of Sampling Steps", info="+quality ++inference time",value=20)    
                 with gr.Row():
-                    seed = gr.Slider(minimum=0, maximum=10000, step=1, label="Seed", value=42, scale=3)
-                    random_seed = gr.Button("🎲 randomize seed", scale=1)
+                    seed = gr.Slider(minimum=-1, maximum=10000, step=1, label="Seed (-1 for random)", value=-1, scale=3)
+                    # random_seed = gr.Button("🎲 randomize seed", scale=1)
                 with gr.Row():
                     enable_cpu_offload = gr.Checkbox(label="Enable CPU Offload", info="Don't touch unless certain!", value=True)
                     target_fps = gr.Radio(
@@ -2190,7 +2190,7 @@ with gr.Blocks(css=css) as demo:
         show_progress=True
     )
     
-    random_seed.click(fn=randomize_seed, outputs=seed)
+    # random_seed.click(fn=randomize_seed, outputs=seed)
     
     # Timer that updates system info
     timer = gr.Timer(value=1)
