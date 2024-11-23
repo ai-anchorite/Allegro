@@ -637,7 +637,7 @@ def open_output_folder():
     # Open folder
     try:
         if os.name == 'nt':  # Windows
-            os.startfile(folder_path)
+            subprocess.run(['explorer', folder_path])
         elif os.name == 'posix':  # macOS and Linux
             subprocess.run(['xdg-open' if os.name == 'posix' else 'open', folder_path])
         return f"Opening folder: {folder_path}"
@@ -1857,20 +1857,20 @@ Tip: Start with presets, then fine-tune with manual controls!
 
 Note: I haven't really done much with these. Very, very easy to adjust them in the code to your tastes. 
 
-Presets can be altered by editing gradio_app.py -> update_sliders_for_preset() [currently around line 930]
+Presets can be altered by editing gradio_app.py -> update_sliders_for_preset() [currently around line 1045]
 """
 
 def get_gen_info():
     return """🎬 GENERATION GUIDE
 
 ## 🎯 Core Settings
-• Guidance Scale (0-20):
+• Guidance Scale (1-20):
   - 7.5: Balanced (recommended)
   - Lower: More creative/abstract
   - Higher: More literal/accurate
   
 • Sampling Steps (10-100):
-  - 20: Quick results
+  - 20: "Quick" results
   - 50: Good balance
   - 100: Maximum quality
   Note: More steps = longer generation time
@@ -1941,19 +1941,19 @@ css = """
 
 .video-natural-size video {
     max-width: 100% !important;
-    max-height: 100vh !important;
+    max-height: 80vh !important;
     width: auto !important;
     height: auto !important;
     object-fit: contain !important;
 }
 
 .image-preview {
-    max-height: 400px !important;
+    max-height: 60vh !important;
     width: 100% !important;
 }
 
 .image-preview img {
-    max-height: 360px !important;
+    max-height:60vh !important;
     object-fit: contain !important;
     width: 100% !important;
 }
@@ -1974,7 +1974,7 @@ with gr.Blocks(css=css) as demo:
                 video_output = gr.Video(label="Generated Video", interactive=False, elem_classes="video-natural-size")
             with gr.Row():
                 download_button = gr.Button("Download Video Models First! (40GB) - not required for Tool Box.", variant="primary", visible=check_button_visibility())
-                submit_btn = gr.Button("Generate Video", variant="primary", scale=4, visible=check_generate_button_visibility())
+                submit_btn = gr.Button("Generate Txt2Video", variant="primary", scale=4, visible=check_generate_button_visibility())
                 transfer_to_toolbox_btn = gr.Button("⬇️ Send to Tool Box", visible=False, scale=1, variant="huggingface")
                 
         with gr.Tab("i2v input"):
@@ -1992,7 +1992,7 @@ with gr.Blocks(css=css) as demo:
                         elem_classes="image-preview"
                     )
             with gr.Row():                    
-                submit_ti2v_btn = gr.Button("Generate TI2V", variant="primary", scale=1)
+                submit_ti2v_btn = gr.Button("Generate Text+Image2Video", variant="primary", scale=1)
                     
     # with gr.Row():
         # download_button = gr.Button("Download Video Models First! (40GB) - not required for Tool Box.", variant="primary", visible=check_button_visibility())
@@ -2001,61 +2001,66 @@ with gr.Blocks(css=css) as demo:
         
     with gr.Row():        
         with gr.Column():
-            user_prompt = gr.Textbox(
-                value=POSITIVE_TEMPLATE,
-                label="Add your video prompt",
-                lines=2
-            )
-            
-            with gr.Row():
-                guidance_scale = gr.Slider(minimum=1, maximum=20, step=0.5, 
-                                       label="Guidance Scale", value=7.5)
-                num_sampling_steps = gr.Slider(minimum=10, maximum=100, step=1, 
-                                           label="Number of Sampling Steps", info="+quality ++inference time",value=20)    
-                
-            with gr.Row():
-                seed = gr.Slider(minimum=0, maximum=10000, step=1, label="Seed", value=42, scale=3)
-                random_seed = gr.Button("🎲 randomize seed", scale=1)
-                
-            with gr.Row():
-                enable_cpu_offload = gr.Checkbox(label="Enable CPU Offload", info="Don't touch unless certain!", value=True)
-                target_fps = gr.Radio(
-                    choices=["15 FPS (Original)", "30 FPS", "60 FPS"],
-                    value="60 FPS",
-                    label="Interpolation Options",
+            with gr.Accordion("Prompting", open=False):
+                user_prompt = gr.Textbox(
+                    value=POSITIVE_TEMPLATE,
+                    label="Positive Prompt",
+                    lines=4
                 )
+                negative_prompt = gr.Textbox(
+                    value=NEGATIVE_TEMPLATE,
+                    label="Negative Prompt",
+                    placeholder="Enter negative prompt",
+                    lines=4
+                )
+            with gr.Accordion("Parameters", open=False): 
+                with gr.Row():
+                    guidance_scale = gr.Slider(minimum=1, maximum=20, step=0.5, 
+                                           label="Guidance Scale", value=7.5)
+                    num_sampling_steps = gr.Slider(minimum=10, maximum=100, step=1, 
+                                               label="Number of Sampling Steps", info="+quality ++inference time",value=20)    
+                with gr.Row():
+                    seed = gr.Slider(minimum=0, maximum=10000, step=1, label="Seed", value=42, scale=3)
+                    random_seed = gr.Button("🎲 randomize seed", scale=1)
+                with gr.Row():
+                    enable_cpu_offload = gr.Checkbox(label="Enable CPU Offload", info="Don't touch unless certain!", value=True)
+                    target_fps = gr.Radio(
+                        choices=["15 FPS (Original)", "30 FPS", "60 FPS"],
+                        value="60 FPS",
+                        label="Interpolation Options",
+                    )
 
             # Dev tools in accordion
             with gr.Accordion("Tool Box", open=False):        
                 with gr.Row():
                     input_video = gr.Video(label="Upload Video for Processing")
                     output_processed = gr.Video(label="Processed Video", interactive=False)
-
-                with gr.Row():
-                    process_fps = gr.Radio(
-                        choices=["0x fps", "2x fps", "3x fps", "4x fps"],
-                        value="0x fps",
-                        label="RIFE Frame Interpolation",
-                        info="Smooth motion by increasing fps"
-                    )
-                with gr.Row():
-                    send_to_main_btn = gr.Button("⬆️ Send to Main Display", visible=False, variant="huggingface")
-                    send_to_input_btn = gr.Button("⬅️ Use as Input", visible=False, variant="huggingface")
-                    
-                with gr.Row():                    
-                    speed_factor = gr.Slider(
-                        minimum=SPEED_FACTOR_MIN,
-                        maximum=SPEED_FACTOR_MAX,
-                        step=SPEED_FACTOR_STEP,
-                        value=1.0,
-                        label="Adjust Video Speed",
-                        info="Slow-mo (0.25x) to speed-up (2x)"
-                    )
-                with gr.Row():    
-                    process_btn = gr.Button("Process Frame Adjustments", variant="primary")
-                gr.HTML('<hr style="margin: 20px 0; border: none; border-top: 1px solid rgba(128, 128, 128, 0.2);">') 
-                
-                with gr.Accordion("🔄 Video Loop", open=True):        
+                    with gr.Row():
+                        send_to_main_btn = gr.Button("⬆️ Send to Main Display", visible=False, variant="huggingface", size="sm")
+                        send_to_input_btn = gr.Button("⬅️ Use as Input", visible=False, variant="huggingface", size="sm")
+                with gr.Accordion("Frame Adjust", open=False):  
+                    with gr.Row():
+                        process_fps = gr.Radio(
+                            choices=["0x fps", "2x fps", "3x fps", "4x fps"],
+                            value="0x fps",
+                            label="RIFE Frame Interpolation",
+                            info="Smooth motion by increasing fps"
+                            )
+                       
+                    with gr.Row():                    
+                        speed_factor = gr.Slider(
+                            minimum=SPEED_FACTOR_MIN,
+                            maximum=SPEED_FACTOR_MAX,
+                            step=SPEED_FACTOR_STEP,
+                            value=1.0,
+                            label="Adjust Video Speed",
+                            info="Slow-mo (0.25x) to speed-up (2x)"
+                        )
+                    with gr.Row():    
+                        process_btn = gr.Button("Process Frames (⬅️ on Input Video)", variant="primary")
+                # gr.HTML('<hr style="margin: 20px 0; border: none; border-top: 1px solid rgba(128, 128, 128, 0.2);">') 
+ 
+                with gr.Accordion("Video Loop", open=False):        
                     with gr.Row():
                         loop_type = gr.Radio(
                             choices=["none", "loop", "ping-pong"],
@@ -2074,7 +2079,7 @@ with gr.Blocks(css=css) as demo:
                         loop_btn = gr.Button("Create Loop (⬅️ on Input Video)", variant="primary")
                     gr.HTML('<hr style="margin: 20px 0; border: none; border-top: 1px solid rgba(128, 128, 128, 0.2);">')
 
-                with gr.Accordion("🎨 Video Filters - FFmpeg", open=True):
+                with gr.Accordion("Video Filters - FFmpeg", open=False):
                     with gr.Row():
                         preset = gr.Radio(
                             choices=["none", "cinematic", "vintage", "cool", "warm", "dramatic"],
@@ -2118,12 +2123,6 @@ with gr.Blocks(css=css) as demo:
                                            # label="Video Width", info="for test purposes only",value=1280)
                     
         with gr.Column():    
-            negative_prompt = gr.Textbox(
-                value=NEGATIVE_TEMPLATE,
-                label="Negative Prompt",
-                placeholder="Enter negative prompt",
-                lines=2
-            )
             # batch generations
             with gr.Row():
                 with gr.Accordion("Batch Processing", open=False):
@@ -2136,7 +2135,7 @@ with gr.Blocks(css=css) as demo:
                     
             # Welcome & monitor Info
             with gr.Row():
-                with gr.Accordion("Helpful Docs", open=True):   
+                with gr.Accordion("Helpful Docs", open=False):   
                     with gr.Tabs() as info_tabs:
                         with gr.Tab("Welcome"):
                             welcome_info = gr.Textbox(
@@ -2152,32 +2151,35 @@ with gr.Blocks(css=css) as demo:
                                 lines=20,
                                 interactive=False
                             )
-                        with gr.Tab("Prompting and Batch"):
+                        with gr.Tab("Prompt and Batch"):
                             gen_info = gr.Textbox(
                                 value=get_gen_info(),  
-                                label="Prompting and Batch",
+                                label="Prompt and Batch",
                                 lines=20,
                                 interactive=False
                             )
-            with gr.Row():
-                open_folder_btn = gr.Button("📁 Open Output Folder")  
                 
-            with gr.Row():       
-                # Status Info (for cpu/gpu monitor)
-                status_info = gr.Textbox(
-                    label="Monitor",
-                    lines=5,
-                    interactive=False,
-                    value=get_welcome_message()
-                )    
-                # System Messages Console
+            with gr.Row():   
+                with gr.Accordion("Monitor and Console", open=False):  
+                    with gr.Row():                    
+                        # Status Info (for cpu/gpu monitor)
+                        status_info = gr.Textbox(
+                            label="Monitor",
+                            lines=5,
+                            interactive=False,
+                            value=get_welcome_message()
+                        )    
+                    # System Messages Console
+                    with gr.Row():
+                        console_out = gr.Textbox(
+                            label="System Messages",
+                            lines=8,
+                            interactive=False,
+                            show_copy_button=True
+                        )
+                    
             with gr.Row():
-                console_out = gr.Textbox(
-                    label="System Messages",
-                    lines=8,
-                    interactive=False,
-                    show_copy_button=True
-                )
+                open_folder_btn = gr.Button("📁 Open Output Folder", variant="huggingface", size="sm")          
 
 
     # Event handlers
