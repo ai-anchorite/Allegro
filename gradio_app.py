@@ -1933,19 +1933,6 @@ Process multiple videos overnight:
 
 """
 css = """
-.video-natural-size {
-    display: flex !important;
-    justify-content: center !important;
-    align-items: center !important;
-}
-
-.video-natural-size video {
-    max-width: 100% !important;
-    max-height: 80vh !important;
-    width: auto !important;
-    height: auto !important;
-    object-fit: contain !important;
-}
 
 .image-preview {
     max-height: 60vh !important;
@@ -1958,20 +1945,19 @@ css = """
     width: 100% !important;
 }
 
+.video-size video {
+    max-height: 80vh;
+    object-fit: contain;
+}
 """
 
     
-#UI title bar  
-title = """<style>.allegro-banner{background:linear-gradient(to bottom,#162828,#101c1c);color:#fff;padding:0.5rem;border-radius:0.5rem;border:1px solid rgba(255,255,255,0.1);box-shadow:0 4px 6px rgba(0,0,0,0.1);margin-bottom:0.5rem;text-align:center}.allegro-banner h1{font-size:1.75rem;margin:0 0 0.25rem 0;font-weight:300;color:#ff6b35 !important}.allegro-banner p{color:#b0c4c4;font-size:1rem;margin:0 0 0.75rem 0}.allegro-banner .footer{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;font-size:0.875rem;color:#a0a0a0}.allegro-banner .powered-by{display:flex;align-items:center;gap:0.25rem}.allegro-banner .credits{display:flex;flex-direction:column;align-items:center;gap:0.25rem}.allegro-banner a{color:#4a9eff;text-decoration:none;transition:color 0.2s ease}.allegro-banner a:hover{color:#6db3ff}@media (max-width:768px){.allegro-banner .footer{flex-direction:column;gap:0.5rem;align-items:center}}</style><div class="allegro-banner"><h1>Allegro Text-to-Video</h1><p>Transform your prompts to video.</p><div class="footer"><div class="powered-by"><span>⚡ Powered by</span><a href="https://pinokio.computer/" target="_blank">Pinokio</a></div><div class="credits"><div>OG Project: <a href="https://github.com/rhymes-ai/Allegro" target="_blank">Rhymes</a></div><div>Code borrowed from: <a href="https://huggingface.co/spaces/fffiloni/allegro-text2video" target="_blank">fffiloni</a></div></div></div></div>"""
-
-
 # Create Gradio interface
 with gr.Blocks(css=css) as demo:
-    #gr.HTML(title)
     with gr.Tabs() as generate_tabs:
         with gr.Tab("Video Result"):
             with gr.Row():
-                video_output = gr.Video(label="Generated Video", interactive=False, elem_classes="video-natural-size")
+                video_output = gr.Video(label="Generated Video", interactive=False, elem_classes="video-size")
             with gr.Row():
                 download_button = gr.Button("Download Video Models First! (40GB) - not required for Tool Box.", variant="primary", visible=check_button_visibility())
                 submit_btn = gr.Button("Generate Txt2Video", variant="primary", scale=4, visible=check_generate_button_visibility())
@@ -2160,7 +2146,16 @@ with gr.Blocks(css=css) as demo:
                             )
                 
             with gr.Row():   
-                with gr.Accordion("Monitor and Console", open=False):  
+                with gr.Accordion("Message Console and System Monitor", open=True):  
+                    # System Messages Console
+                    with gr.Row():
+                        console_out = gr.Textbox(
+                            label="System Messages",
+                            placeholder="Important system info will appear here",
+                            lines=8,
+                            interactive=False,
+                            show_copy_button=True
+                        )
                     with gr.Row():                    
                         # Status Info (for cpu/gpu monitor)
                         status_info = gr.Textbox(
@@ -2169,14 +2164,6 @@ with gr.Blocks(css=css) as demo:
                             interactive=False,
                             value=get_welcome_message()
                         )    
-                    # System Messages Console
-                    with gr.Row():
-                        console_out = gr.Textbox(
-                            label="System Messages",
-                            lines=8,
-                            interactive=False,
-                            show_copy_button=True
-                        )
                     
             with gr.Row():
                 open_folder_btn = gr.Button("📁 Open Output Folder", variant="huggingface", size="sm")          
