@@ -1642,6 +1642,7 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
             negative_prompt=negative_prompt,
             conditional_images=cond_imgs,
             conditional_images_indices=cond_imgs_indices,
+            # num_frames=8,  #fast 1-minute test inference
             num_frames=88,
             height=720,
             width=1280,
@@ -1904,31 +1905,6 @@ Example Prompt:
 "(masterpiece), (best quality), cinematic wide shot of a misty forest at dawn, golden sunlight filtering through trees, gentle wind moving leaves, atmospheric, moody lighting, sharp focus, 4k"
 
 
-## 🖼️ Image-to-Video Generation (TI2V)
-• Result Video will appear in the Video Result tab ;)
-
-• Generation Time:
-  - TI2V is significantly slower than T2V
-  - Spiky, and uses 30GB+ VRAM during the pre-generation image processing phase (vae encoding and creating temporal alignment masks)
-  - Inference VRAM has a similar profile as t2v
-  - There's a _very_ long delay after the final step. Just let it cook!
-  - 90 minutes on a 3090 - 30 minute pre-phase + 60 minute generation
-
-• Aspect Ratio Matters:
-  - output video resolution is fixed at 720 × 1280. Input images with different resolutions will be automatically cropped and resized to fit.
-  
-• Upload 1-2 images to guide video generation:
-  - First Frame (Required): Sets the initial scene
-  - Last Frame (Optional): Guides the final composition
-  
-• Tips for best results:
-  - Use high-quality, clear images
-  - Consider visual continuity between frames
-  - Prompts matter!
-  
-
-
-  
 ## 📦 Batch Processing
 Process multiple videos overnight:
 
@@ -1959,6 +1935,34 @@ Process multiple videos overnight:
   (masterpiece), city streets in rain...
 
 """
+
+def get_vid_info():
+    return """🖼️ Image-to-Video Generation (TI2V)
+
+• Result Video will show in the Video Result tab <-
+  
+• Frame Interpolation works same as with t2v. Disable or adjust in the Parameters Accordion
+
+• Generation Time:
+  - TI2V is significantly slower than T2V
+  - Spiky, and uses 30GB+ VRAM during the pre-generation image processing phase (vae encoding and creating temporal alignment masks)
+  - Inference VRAM has a similar profile as t2v
+  - There's a _very_ long delay after the final step. Just let it cook!
+  - 90 minutes on a 3090 - 30 minute pre-phase + 60 minute generation
+
+• Aspect Ratio Matters:
+  - output video resolution is fixed at 720 × 1280. Input images with different resolutions will be automatically cropped and resized to fit.
+  
+• Upload 1-2 images to guide video generation:
+  - First Frame (Required): Sets the initial scene
+  - Last Frame (Optional): Guides the final composition
+  
+• Tips for best results:
+  - Use high-quality, clear images
+  - Consider visual continuity between frames
+  - Prompts matter!
+"""
+  
 css = """
 
 .image-preview {
@@ -2006,7 +2010,7 @@ with gr.Blocks(css=css) as demo:
                     )
             with gr.Row():
                 download_ti2v_button = gr.Button("Download TI2V Models First! (40GB)", variant="primary", visible=lambda: not check_weights_exist("ti2v"))
-                submit_ti2v_btn = gr.Button("Generate Text+Image2Video", variant="primary", scale=4, visible=lambda: check_weights_exist("ti2v"))
+                submit_ti2v_btn = gr.Button("Generate Text+Image2Video", variant="primary", visible=lambda: check_weights_exist("ti2v"))
                     
        
     with gr.Row():        
@@ -2139,6 +2143,13 @@ with gr.Blocks(css=css) as demo:
                                 lines=20,
                                 interactive=False
                             )
+                        with gr.Tab("Text + Img2Video"):
+                            gen_info = gr.Textbox(
+                                value=get_vid_info(),  
+                                label="Prompt and Batch",
+                                lines=20,
+                                interactive=False
+                            ) 
                         with gr.Tab("Tool Box info"):
                             toolbox_info = gr.Textbox(
                                 value=get_toolbox_info(),  
@@ -2153,6 +2164,7 @@ with gr.Blocks(css=css) as demo:
                                 lines=20,
                                 interactive=False
                             )
+                           
                 
             with gr.Row():   
                 with gr.Accordion("Message Console and System Monitor", open=True):  
