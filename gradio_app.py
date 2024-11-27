@@ -41,7 +41,7 @@ from einops import rearrange
 from torchvision.transforms import Lambda
 from torchvision import transforms
 from allegro.pipelines.pipeline_allegro_ti2v import AllegroTI2VPipeline
-from allegro.models.transformers.transformer_3d_allegro_ti2v import AllegroTransformerTI2V3DModel  # This was the missing one!
+from allegro.models.transformers.transformer_3d_allegro_ti2v import AllegroTransformerTI2V3DModel
 from allegro.pipelines.data_process import ToTensorVideo, CenterCropResizeVideo
 
 
@@ -96,9 +96,11 @@ NEGATIVE_TEMPLATE = """lowres, bad anatomy, bad hands, text, error, missing fing
 weights_dir = './allegro_weights'
 os.makedirs(weights_dir, exist_ok=True)
 
-def check_weights_exist():
+def check_weights_exist(model_type="t2v"):
+    """Check if model weights exist for specified pipeline"""
+    base_dir = './allegro_weights' if model_type == "t2v" else './allegro_ti2v_weights'
     required_paths = [
-        os.path.join(weights_dir, folder) for folder in [
+        os.path.join(base_dir, folder) for folder in [
             'scheduler',
             'text_encoder',
             'tokenizer',
@@ -115,20 +117,24 @@ def get_dir_size(path):
         size += sum(os.path.getsize(os.path.join(root, name)) for name in files)
     return size / (1024 * 1024 * 1024)  # Convert to GB
 
-def download_model():
+def download_model(model_type="t2v"):
     """Download model with size-based progress tracking"""
-    if not check_weights_exist():
+    base_dir = './allegro_weights' if model_type == "t2v" else './allegro_ti2v_weights'
+    repo_id = 'rhymes-ai/Allegro' if model_type == "t2v" else 'rhymes-ai/Allegro-TI2V'
+    expected_size = 41.2 if model_type == "t2v" else 24  
+    
+    if not check_weights_exist(model_type):
         messages = [
-            "\n🚀 DOWNLOADING MODEL WEIGHTS (40GB)",
+            f"\n🚀 DOWNLOADING {model_type.upper()} MODEL WEIGHTS ({expected_size}GB)",
             "═" * 25,
-            "📂 Location: " + os.path.abspath(weights_dir),
+            "📂 Location: " + os.path.abspath(base_dir),
             "═" * 25
         ]
         
         try:
             progress = gr.Progress()
             download_thread = threading.Thread(target=snapshot_download, kwargs={
-                'repo_id': 'rhymes-ai/Allegro',
+                'repo_id': repo_id,
                 'allow_patterns': [
                     'scheduler/**',
                     'text_encoder/**',
@@ -136,28 +142,27 @@ def download_model():
                     'transformer/**',
                     'vae/**',
                 ],
-                'local_dir': weights_dir,
+                'local_dir': base_dir,
                 'max_workers': 4
             })
             download_thread.start()
             
             # Monitor download progress
-            total_size = 41.2  # Expected size in GB
             while download_thread.is_alive():
-                current_size = get_dir_size(weights_dir)
-                progress_pct = min(current_size / total_size, 0.99)  # Cap at 99% until complete
-                progress(progress_pct, f"Downloaded: {current_size:.1f}GB / {total_size}GB")
-                time.sleep(2)  # Check every 2 seconds
+                current_size = get_dir_size(base_dir)
+                progress_pct = min(current_size / expected_size, 0.99)
+                progress(progress_pct, f"Downloaded: {current_size:.1f}GB / {expected_size}GB")
+                time.sleep(2)
                 
             download_thread.join()
             progress(1.0, "Download complete!")
             
             messages.extend([
                 "✨ Download complete!",
-                f"✓ Final size: {get_dir_size(weights_dir):.1f}GB",
+                f"✓ Final size: {get_dir_size(base_dir):.1f}GB",
                 "═" * 25
             ])
-            return "\n".join(messages), None, gr.update(visible=False), gr.update(visible=True)  # Update both buttons
+            return "\n".join(messages), None, gr.update(visible=False), gr.update(visible=True)
             
         except Exception as e:
             messages.extend([
@@ -166,9 +171,9 @@ def download_model():
                 "Please check your connection and try again",
                 "═" * 25
             ])
-            return "\n".join(messages), None, gr.update(visible=True), gr.update(visible=False)  # Update both buttons
+            return "\n".join(messages), None, gr.update(visible=True), gr.update(visible=False)
             
-    return "Model weights already present, skipping download.", None, gr.update(visible=False), gr.update(visible=True)
+    return f"{model_type.upper()} model weights already present, skipping download.", None, gr.update(visible=False), gr.update(visible=True)
 
 def check_button_visibility():
     return not check_weights_exist()
@@ -182,6 +187,8 @@ def run_inference(user_prompt, negative_prompt, guidance_scale, num_sampling_ste
     messages = []
     generation_start = None
 
+    actual_seed = random.randint(100, 100000) if seed == -1 else seed
+    
     def add_message(msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_msg = f"[{timestamp}] {msg}"
@@ -197,7 +204,7 @@ def run_inference(user_prompt, negative_prompt, guidance_scale, num_sampling_ste
             f"• Prompt: '{user_prompt}'",
             f"• Steps: {num_sampling_steps}",
             f"• Guidance: {guidance_scale}",
-            f"• Seed: {seed}",
+            f"• Seed: {actual_seed} {'(random)' if seed == -1 else ''}",
             "═" * 25
         ]
         for msg in summary_messages:
@@ -277,17 +284,17 @@ def run_inference(user_prompt, negative_prompt, guidance_scale, num_sampling_ste
         out_video = allegro_pipeline(
             user_prompt, 
             negative_prompt=negative_prompt, 
-            num_frames=88,
-            height=720,
-            width=1280,
-            # num_frames=8,  #fast 1-minute test inference
-            # height=256,
-            # width=512,
+            # num_frames=88,
+            # height=720,
+            # width=1280,
+            num_frames=8,  #fast 1-minute test inference
+            height=256,
+            width=512,
             num_inference_steps=num_sampling_steps,
             guidance_scale=guidance_scale,
             max_sequence_length=512,
             output_type="np",
-            generator=torch.Generator(device=device).manual_seed(random.randint(0, 10000) if seed == -1 else seed),
+            generator=torch.Generator(device=device).manual_seed(actual_seed),
             callback=progress_callback,
             callback_steps=1
         ).video[0]        
@@ -316,7 +323,7 @@ def run_inference(user_prompt, negative_prompt, guidance_scale, num_sampling_ste
                 negative_prompt,
                 guidance_scale,
                 num_sampling_steps,
-                seed
+                actual_seed
             )
             
             add_message(f"✅ Generation complete! Saved to: {output_path}")
@@ -354,7 +361,7 @@ def run_inference(user_prompt, negative_prompt, guidance_scale, num_sampling_ste
                 negative_prompt,
                 guidance_scale,
                 num_sampling_steps,
-                seed,
+                actual_seed,
                 target_fps=fps
             )
             
@@ -563,10 +570,6 @@ class VideoInterpolator:
         except Exception as e:
             self.add_message(f"❌ Error during video processing: {str(e)}")
             return None, self.messages
-
-
-def randomize_seed():
-    return random.randint(0, 10000)
 
 
 def get_system_info():
@@ -1369,6 +1372,9 @@ def process_batch(prompts_text, negative_prompt, guidance_scale, num_sampling_st
         prompts = [p.strip() for p in prompts_text.split('---') if p.strip()]
         if not prompts:
             return None, "No valid prompts found in batch input."
+            
+        # Generate a base random seed if -1 was provided
+        base_seed = random.randint(100, 100000) if seed == -1 else seed
 
         # Initial batch status
         summary_messages = [
@@ -1378,7 +1384,7 @@ def process_batch(prompts_text, negative_prompt, guidance_scale, num_sampling_st
             f"• Total Jobs: {len(prompts)}",
             f"• Steps: {num_sampling_steps}",
             f"• Guidance: {guidance_scale}",
-            f"• Base Seed: {seed}",
+            f"• Base Seed: {base_seed} {'(random)' if seed == -1 else ''}",
             "═" * 25
         ]
         for msg in summary_messages:
@@ -1386,11 +1392,12 @@ def process_batch(prompts_text, negative_prompt, guidance_scale, num_sampling_st
 
         # Process each prompt
         for i, prompt in enumerate(prompts, 1):
+            current_seed = base_seed + (i - 1)  # Increment from base seed
             job_messages = [
                 f"\n📌 JOB {i}/{len(prompts)}",
                 "─" * 25,
                 f"Prompt: {prompt}",
-                f"Seed: {seed + i - 1}",  # Increment seed for each job
+                f"Seed: {current_seed}",
                 "─" * 25
             ]
             for msg in job_messages:
@@ -1403,7 +1410,7 @@ def process_batch(prompts_text, negative_prompt, guidance_scale, num_sampling_st
                     negative_prompt,
                     guidance_scale,
                     num_sampling_steps,
-                    seed + i - 1,  # Use incremented seed
+                    current_seed,  # Use the incremented seed
                     enable_cpu_offload,
                     target_fps,
                     progress
@@ -1511,6 +1518,8 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
     messages = []
     generation_start = None
 
+    actual_seed = random.randint(100, 100000) if seed == -1 else seed
+
     def add_message(msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_msg = f"[{timestamp}] {msg}"
@@ -1528,7 +1537,7 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
             f"• Last Frame: {os.path.basename(last_frame) if last_frame else 'None'}",
             f"• Steps: {num_sampling_steps}",
             f"• Guidance: {guidance_scale}",
-            f"• Seed: {seed}",
+            f"• Seed: {actual_seed} {'(random)' if seed == -1 else ''}",
             "═" * 25
         ]
         for msg in summary_messages:
@@ -1543,7 +1552,7 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
         # Load VAE
         add_message("📥 Loading VAE model...")
         vae = AllegroAutoencoderKL3D.from_pretrained(
-            "./allegro_weights/vae/", 
+            "./allegro_ti2v_weights/vae/", 
             torch_dtype=torch.float32
         ).to(device)
         vae.eval()
@@ -1553,7 +1562,7 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
         progress(0.10, desc="Loading text encoder...")
         add_message("📥 Loading text encoder...")
         text_encoder = T5EncoderModel.from_pretrained(
-            "./allegro_weights/text_encoder/", 
+            "./allegro_ti2v_weights/text_encoder/", 
             torch_dtype=dtype
         ).to(device)
         text_encoder.eval()
@@ -1562,10 +1571,10 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
         # Load remaining models
         progress(0.50, desc="Loading transformer...")
         add_message("📥 Loading transformer model...")
-        tokenizer = T5Tokenizer.from_pretrained("./allegro_weights/tokenizer/")
+        tokenizer = T5Tokenizer.from_pretrained("./allegro_ti2v_weights/tokenizer/")
         scheduler = EulerAncestralDiscreteScheduler()
         transformer = AllegroTransformerTI2V3DModel.from_pretrained(
-            "./allegro_weights/transformer/", 
+            "./allegro_ti2v_weights/transformer/", 
             torch_dtype=dtype
         ).to(device)
         transformer.eval()
@@ -1640,7 +1649,7 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
             guidance_scale=guidance_scale,
             max_sequence_length=512,
             output_type="np",
-            generator=torch.Generator(device=device).manual_seed(random.randint(0, 10000) if seed == -1 else seed),
+            generator=torch.Generator(device=device).manual_seed(actual_seed),
             callback=progress_callback,
             callback_steps=1
         ).video[0]
@@ -1669,9 +1678,7 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
                 negative_prompt,
                 guidance_scale,
                 num_sampling_steps,
-                seed,
-                first_frame=first_frame,
-                last_frame=last_frame
+                actual_seed,
             )
             
             add_message(f"✅ Generation complete! Saved to: {output_path}")
@@ -1708,10 +1715,8 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
                 negative_prompt,
                 guidance_scale,
                 num_sampling_steps,
-                seed,
+                actual_seed,
                 target_fps=fps,
-                first_frame=first_frame,
-                last_frame=last_frame
             )
             
             add_message(f"✅ Processing complete! Final video saved to: {interpolated_path}")
@@ -1729,9 +1734,7 @@ def run_inference_ti2v(user_prompt, negative_prompt, first_frame, last_frame, gu
                 negative_prompt,
                 guidance_scale,
                 num_sampling_steps,
-                seed,
-                first_frame=first_frame,
-                last_frame=last_frame
+                actual_seed,
             )
             
             add_message(f"✅ Original video saved to: {output_path}")
@@ -1795,7 +1798,7 @@ def get_welcome_message():
 • "Enable CPU Offload" is ON by default - recommended for most users
 • Only disable CPU Offload if you have a Workstation GPU with 30GB+ VRAM 
 • Generation will fail if you run out of VRAM!
-• You can adjust some of the default settings, like save path and default prompt, by editing the webui_app.py. Look for the # Constants and configurations section near the top (currently line: 66).
+• You can adjust some of the default settings, like save path and default prompt, by editing the webui_app.py. Look for the # Constants and configurations section near the top (currently line: 80).
 
 
 🎯 For best results:
@@ -1901,6 +1904,31 @@ Example Prompt:
 "(masterpiece), (best quality), cinematic wide shot of a misty forest at dawn, golden sunlight filtering through trees, gentle wind moving leaves, atmospheric, moody lighting, sharp focus, 4k"
 
 
+## 🖼️ Image-to-Video Generation (TI2V)
+• Result Video will appear in the Video Result tab ;)
+
+• Generation Time:
+  - TI2V is significantly slower than T2V
+  - Spiky, and uses 30GB+ VRAM during the pre-generation image processing phase (vae encoding and creating temporal alignment masks)
+  - Inference VRAM has a similar profile as t2v
+  - There's a _very_ long delay after the final step. Just let it cook!
+  - 90 minutes on a 3090 - 30 minute pre-phase + 60 minute generation
+
+• Aspect Ratio Matters:
+  - output video resolution is fixed at 720 × 1280. Input images with different resolutions will be automatically cropped and resized to fit.
+  
+• Upload 1-2 images to guide video generation:
+  - First Frame (Required): Sets the initial scene
+  - Last Frame (Optional): Guides the final composition
+  
+• Tips for best results:
+  - Use high-quality, clear images
+  - Consider visual continuity between frames
+  - Prompts matter!
+  
+
+
+  
 ## 📦 Batch Processing
 Process multiple videos overnight:
 
@@ -1914,13 +1942,12 @@ Process multiple videos overnight:
   Third prompt...
 
 • Info:
-  - WIP! I've tested it some, and seems to work as expected.
   - No hard limit to number of prompts.  Be careful!
   - CFG, Steps, and Interp settings currently apply to every prompt
   - Seeds auto-increment for variety
   - Generation continues if one fails
   - Check output folder for results
-  - Use at your own risk! 
+  - Use at your own risk! (don't burn your house down)
  
   
 • Example Batch:
@@ -1963,7 +1990,7 @@ with gr.Blocks(css=css) as demo:
                 submit_btn = gr.Button("Generate Txt2Video", variant="primary", scale=4, visible=check_generate_button_visibility())
                 transfer_to_toolbox_btn = gr.Button("⬇️ Send to Tool Box", visible=False, scale=1, variant="huggingface")
                 
-        with gr.Tab("i2v input"):
+        with gr.Tab("i2v input - testing"):
             with gr.Row():
                 with gr.Column():
                     first_frame = gr.Image(
@@ -1977,14 +2004,11 @@ with gr.Blocks(css=css) as demo:
                         type="filepath",
                         elem_classes="image-preview"
                     )
-            with gr.Row():                    
-                submit_ti2v_btn = gr.Button("Generate Text+Image2Video", variant="primary", scale=1)
+            with gr.Row():
+                download_ti2v_button = gr.Button("Download TI2V Models First! (40GB)", variant="primary", visible=lambda: not check_weights_exist("ti2v"))
+                submit_ti2v_btn = gr.Button("Generate Text+Image2Video", variant="primary", scale=4, visible=lambda: check_weights_exist("ti2v"))
                     
-    # with gr.Row():
-        # download_button = gr.Button("Download Video Models First! (40GB) - not required for Tool Box.", variant="primary", visible=check_button_visibility())
-        # submit_btn = gr.Button("Generate Video", variant="primary", scale=4, visible=check_generate_button_visibility())
-        # transfer_to_toolbox_btn = gr.Button("⬇️ Send to Tool Box", visible=False, scale=1, variant="huggingface")
-        
+       
     with gr.Row():        
         with gr.Column():
             with gr.Accordion("Prompting", open=False):
@@ -2006,7 +2030,7 @@ with gr.Blocks(css=css) as demo:
                     num_sampling_steps = gr.Slider(minimum=10, maximum=100, step=1, 
                                                label="Number of Sampling Steps", info="+quality ++inference time",value=20)    
                 with gr.Row():
-                    seed = gr.Slider(minimum=-1, maximum=10000, step=1, label="Seed (-1 for random)", value=-1, scale=3)
+                    seed = gr.Slider(minimum=-1, maximum=100000, step=1, label="Seed (-1 for random)", value=-1, scale=3)
                     # random_seed = gr.Button("🎲 randomize seed", scale=1)
                 with gr.Row():
                     enable_cpu_offload = gr.Checkbox(label="Enable CPU Offload", info="Don't touch unless certain!", value=True)
@@ -2093,25 +2117,10 @@ with gr.Blocks(css=css) as demo:
                     with gr.Row():
                         apply_filters_btn = gr.Button("Apply Filters (⬅️ on Input Video)", variant="primary")
 
-
-
-                        
-                # gr.HTML('<hr style="margin: 20px 0; border: none; border-top: 1px solid rgba(128, 128, 128, 0.2);">')            
-            # with gr.Accordion("Dev Tools", open=False):
-                # with gr.Row():
-                    # test_btn = gr.Button("🧪 Two Minute Test Generation", variant="primary")
-                # with gr.Row():
-                    # num_frames = gr.Slider(minimum=8, maximum=88, step=1, 
-                                           # label="Number of Frames", info="for test purposes only",value=88)
-                    # height = gr.Slider(minimum=360, maximum=720, step=1, 
-                                           # label="Video Height", info="for test purposes only",value=720)
-                    # width = gr.Slider(minimum=640, maximum=1280, step=1, 
-                                           # label="Video Width", info="for test purposes only",value=1280)
-                    
         with gr.Column():    
             # batch generations
             with gr.Row():
-                with gr.Accordion("Batch Processing", open=False):
+                with gr.Accordion("Batch Processing - t2i", open=False):
                     batch_prompts = gr.TextArea(
                         label="Batch Prompts (separate with ---)",
                         placeholder="First prompt here...\n---\nSecond prompt here...\n---\nThird prompt...",
@@ -2176,8 +2185,6 @@ with gr.Blocks(css=css) as demo:
         outputs=[console_out, video_output, download_button, submit_btn],  # Add submit_btn
         show_progress=True
     )
-    
-    # random_seed.click(fn=randomize_seed, outputs=seed)
     
     # Timer that updates system info
     timer = gr.Timer(value=1)
@@ -2409,6 +2416,11 @@ with gr.Blocks(css=css) as demo:
         show_progress=True
     )
 
-
+    download_ti2v_button.click(
+        fn=lambda: download_model("ti2v"),
+        outputs=[console_out, video_output, download_ti2v_button, submit_ti2v_btn],
+        show_progress=True
+    )
+    
 # Launch the interface
 demo.launch(share=False)
